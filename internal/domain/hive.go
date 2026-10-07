@@ -98,23 +98,6 @@ func (h Hive) AcceptsQueenChange() bool {
 	return h.State != HiveRetired
 }
 
-// HiveGate 描述一次已提交状态对外允许的写入范围。
-type HiveGate struct {
-	State       HiveState `json:"state"`
-	Revision    int64     `json:"revision"`
-	Writable    bool      `json:"writable"`
-	PublishedAt time.Time `json:"publishedAt"`
-}
-
-// GateFor 按蜂群状态推导写入门闸。退休状态不再接受巡检与换王。
-func GateFor(state HiveState, at time.Time) HiveGate {
-	return HiveGate{
-		State:       state,
-		Writable:    state != HiveRetired,
-		PublishedAt: at.UTC(),
-	}
-}
-
 // HiveAdvancePlan 是一次待提交的状态推进：它记录规划时观察到的来源状态
 // 与版本，提交阶段按这份计划写入目标状态。
 type HiveAdvancePlan struct {
@@ -125,6 +108,7 @@ type HiveAdvancePlan struct {
 }
 
 // PlanHiveAdvance 依据规划时读到的蜂箱状态与版本推导一次状态推进。
+// 目标与当前状态相同视为无实际变化，直接拒绝；其余非法迁移同样拒绝。
 func PlanHiveAdvance(hiveID string, from HiveState, revision int64, target HiveState) (HiveAdvancePlan, error) {
 	if !ValidHiveState(target) {
 		return HiveAdvancePlan{}, Invalid(
@@ -134,7 +118,8 @@ func PlanHiveAdvance(hiveID string, from HiveState, revision int64, target HiveS
 		)
 	}
 	if from == target {
-		return HiveAdvancePlan{HiveID: hiveID, From: from, To: target, Revision: revision}, nil
+		return HiveAdvancePlan{}, InvalidState(
+			"蜂箱 %q 已处于 %q 状态，推进没有实际变化", hiveID, target)
 	}
 	if !CanTransitionHive(from, target) {
 		return HiveAdvancePlan{}, InvalidState(

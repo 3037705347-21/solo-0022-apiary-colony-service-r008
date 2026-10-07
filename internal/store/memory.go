@@ -19,7 +19,6 @@ type Memory struct {
 	queens      map[string][]domain.Queen
 
 	hiveRevisions map[string]int64
-	hiveGates     map[string]domain.HiveGate
 
 	inspectionSeq int
 	queenSeq      int
@@ -32,7 +31,6 @@ func NewMemory() *Memory {
 		inspections:   make(map[string][]domain.Inspection),
 		queens:        make(map[string][]domain.Queen),
 		hiveRevisions: make(map[string]int64),
-		hiveGates:     make(map[string]domain.HiveGate),
 	}
 }
 
@@ -84,8 +82,9 @@ func (m *Memory) HiveCommitView(hiveID string) (domain.HiveState, int64, error) 
 	return hive.State, m.hiveRevisions[hiveID], nil
 }
 
-// CommitHiveAdvance 按规划结果写入目标状态并递增状态版本。它按规划阶段
-// 给出的来源状态判定合法性，并发规划可以依次提交同一目标。
+// CommitHiveAdvance 按规划结果写入目标状态并递增状态版本。提交时在写锁内
+// 比对当前状态与版本：任一不匹配说明已有并发推进先一步生效，本次按冲突拒绝，
+// 保证同一只蜂箱上并发的推进最多只有一次成功。
 func (m *Memory) CommitHiveAdvance(plan domain.HiveAdvancePlan) (domain.Transition, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -93,7 +92,11 @@ func (m *Memory) CommitHiveAdvance(plan domain.HiveAdvancePlan) (domain.Transiti
 	if !ok {
 		return domain.Transition{}, domain.NotFound("蜂箱", plan.HiveID)
 	}
-	if !domain.CanTransitionHive(plan.From, plan.To) && plan.From != plan.To {
+	if hive.State != plan.From || m.hiveRevisions[plan.HiveID] != plan.Revision {
+		return domain.Transition{}, domain.Conflict(
+			"蜂箱 %q 的状态已被并发推进改变，本次推进未生效", plan.HiveID)
+	}
+	if !domain.CanTransitionHive(plan.From, plan.To) {
 		return domain.Transition{}, domain.InvalidState(
 			"蜂箱 %q 不允许从 %q 迁移到 %q", plan.HiveID, plan.From, plan.To)
 	}
@@ -101,25 +104,6 @@ func (m *Memory) CommitHiveAdvance(plan domain.HiveAdvancePlan) (domain.Transiti
 	m.hives[plan.HiveID] = hive
 	m.hiveRevisions[plan.HiveID] = plan.Revision + 1
 	return domain.Transition{HiveID: plan.HiveID, From: plan.From, To: plan.To}, nil
-}
-
-// SetHiveGate 发布蜂箱的写入门闸，供巡检与换王的准入判定读取。
-func (m *Memory) SetHiveGate(hiveID string, gate domain.HiveGate) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.hives[hiveID]; !ok {
-		return domain.NotFound("蜂箱", hiveID)
-	}
-	m.hiveGates[hiveID] = gate
-	return nil
-}
-
-// acceptsWriteLocked 返回当前写入门闸是否允许巡检与换王写入。
-func (m *Memory) acceptsWriteLocked(hiveID string, hive domain.Hive) bool {
-	if gate, ok := m.hiveGates[hiveID]; ok {
-		return gate.Writable
-	}
-	return hive.State != domain.HiveRetired
 }
 
 // AddInspection 分配巡检编号、写入记录，并推进蜂箱的最近巡检时间。
@@ -131,7 +115,7 @@ func (m *Memory) AddInspection(hiveID string, inspection domain.Inspection) (dom
 	if !ok {
 		return domain.Inspection{}, domain.NotFound("蜂箱", hiveID)
 	}
-	if !m.acceptsWriteLocked(hiveID, hive) {
+	if !hive.AcceptsInspection() {
 		return domain.Inspection{}, domain.InvalidState("蜂箱 %q 处于 %q 状态，不接受巡检", hiveID, hive.State)
 	}
 	m.inspectionSeq++
@@ -160,7 +144,7 @@ func (m *Memory) AddQueen(
 	if !ok {
 		return domain.Queen{}, domain.NotFound("蜂箱", hiveID)
 	}
-	if !m.acceptsWriteLocked(hiveID, hive) {
+	if !hive.AcceptsQueenChange() {
 		return domain.Queen{}, domain.InvalidState("蜂箱 %q 处于 %q 状态，不接受换王", hiveID, hive.State)
 	}
 	if closeQueenID != "" {

@@ -90,13 +90,5 @@ func (s *Service) AdvanceHiveState(hiveID, target string) (domain.Transition, er
 	if err != nil {
 		return domain.Transition{}, err
 	}
-	at := s.clock()
-	transition, err := s.store.CommitHiveAdvance(plan)
-	if err != nil {
-		return domain.Transition{}, err
-	}
-	if err := s.store.SetHiveGate(hiveID, domain.GateFor(from, at)); err != nil {
-		return domain.Transition{}, err
-	}
-	return transition, nil
+	return s.store.CommitHiveAdvance(plan)
 }
