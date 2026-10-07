@@ -57,16 +57,22 @@ func (c *client) expect(method, path string, payload any, wantStatus int, wantFr
 	if err != nil {
 		return nil, err
 	}
-	if reply.status != wantStatus {
-		return nil, fmt.Errorf("%s %s 期望状态 %d，实际 %d，响应 %s", method, path, wantStatus, reply.status, reply.text())
-	}
-	text := reply.text()
-	for _, fragment := range wantFragments {
-		if !strings.Contains(text, fragment) {
-			return nil, fmt.Errorf("%s %s 响应缺少 %q：%s", method, path, fragment, text)
-		}
+	if err := reply.expect(wantStatus, wantFragments...); err != nil {
+		return nil, fmt.Errorf("%s %s %w", method, path, err)
 	}
 	return reply, nil
+}
+
+func (r *response) expect(wantStatus int, wantFragments ...string) error {
+	if r.status != wantStatus {
+		return fmt.Errorf("期望状态 %d，实际 %d，响应 %s", wantStatus, r.status, r.text())
+	}
+	for _, fragment := range wantFragments {
+		if !strings.Contains(r.text(), fragment) {
+			return fmt.Errorf("响应缺少 %q：%s", fragment, r.text())
+		}
+	}
+	return nil
 }
 
 func (r *response) text() string {

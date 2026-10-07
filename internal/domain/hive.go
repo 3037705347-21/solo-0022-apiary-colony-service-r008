@@ -133,8 +133,10 @@ func PlanHiveAdvance(hiveID string, from HiveState, revision int64, target HiveS
 			HiveColonized, HiveProduction, HiveWintering, HiveRetired,
 		)
 	}
+	// 推进到当前状态不构成迁移，按状态冲突拒绝，避免误操作被记成一次状态变更。
 	if from == target {
-		return HiveAdvancePlan{HiveID: hiveID, From: from, To: target, Revision: revision}, nil
+		return HiveAdvancePlan{}, InvalidState(
+			"蜂箱 %q 当前已处于 %q 状态，推进到同一状态不构成迁移", hiveID, from)
 	}
 	if !CanTransitionHive(from, target) {
 		return HiveAdvancePlan{}, InvalidState(

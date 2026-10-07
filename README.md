@@ -88,6 +88,7 @@ go run ./cmd/check -workflow install-hive
 go run ./cmd/check -workflow record-inspection
 go run ./cmd/check -workflow replace-queen
 go run ./cmd/check -workflow advance-hive-state
+go run ./cmd/check -workflow advance-concurrency
 go run ./cmd/check -workflow read-apiary-status
 ```
 

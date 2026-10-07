@@ -90,13 +90,7 @@ func (s *Service) AdvanceHiveState(hiveID, target string) (domain.Transition, er
 	if err != nil {
 		return domain.Transition{}, err
 	}
-	at := s.clock()
-	transition, err := s.store.CommitHiveAdvance(plan)
-	if err != nil {
-		return domain.Transition{}, err
-	}
-	if err := s.store.SetHiveGate(hiveID, domain.GateFor(from, at)); err != nil {
-		return domain.Transition{}, err
-	}
-	return transition, nil
+	// 状态写入与写入门闸发布在同一次提交内完成：拿到成功结果即意味着
+	// 新状态（含退役终态）对后续巡检、换王已经生效。
+	return s.store.CommitHiveAdvance(plan, s.clock())
 }

@@ -84,34 +84,41 @@ func (m *Memory) HiveCommitView(hiveID string) (domain.HiveState, int64, error) 
 	return hive.State, m.hiveRevisions[hiveID], nil
 }
 
-// CommitHiveAdvance 按规划结果写入目标状态并递增状态版本。它按规划阶段
-// 给出的来源状态判定合法性，并发规划可以依次提交同一目标。
-func (m *Memory) CommitHiveAdvance(plan domain.HiveAdvancePlan) (domain.Transition, error) {
+// CommitHiveAdvance 按规划结果写入目标状态并递增状态版本。状态校验、
+// 版本比对、写入门闸发布与版本递增在同一把写锁内完成：
+//   - 规划携带的来源状态/版本必须与提交时的当前状态/版本一致，否则说明
+//     期间已有另一次推进生效，本次提交按冲突拒绝（乐观并发控制）；
+//   - 自迁移在此处同样拒绝，保证「没有实际变化就不产生变更事实」；
+//   - 门闸随新状态同时发布，退役生效的同一刻起巡检与换王即被拒之门外。
+func (m *Memory) CommitHiveAdvance(plan domain.HiveAdvancePlan, at time.Time) (domain.Transition, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	hive, ok := m.hives[plan.HiveID]
 	if !ok {
 		return domain.Transition{}, domain.NotFound("蜂箱", plan.HiveID)
 	}
-	if !domain.CanTransitionHive(plan.From, plan.To) && plan.From != plan.To {
+	currentRevision := m.hiveRevisions[plan.HiveID]
+	if hive.State != plan.From || currentRevision != plan.Revision {
+		return domain.Transition{}, domain.Conflict(
+			"蜂箱 %q 的状态已被其他推进更新（规划版本 %d，当前版本 %d），请重新读取后再推进",
+			plan.HiveID, plan.Revision, currentRevision)
+	}
+	if plan.From == plan.To {
+		return domain.Transition{}, domain.InvalidState(
+			"蜂箱 %q 当前已处于 %q 状态，推进到同一状态不构成迁移", plan.HiveID, plan.From)
+	}
+	if !domain.CanTransitionHive(plan.From, plan.To) {
 		return domain.Transition{}, domain.InvalidState(
 			"蜂箱 %q 不允许从 %q 迁移到 %q", plan.HiveID, plan.From, plan.To)
 	}
 	hive.State = plan.To
 	m.hives[plan.HiveID] = hive
-	m.hiveRevisions[plan.HiveID] = plan.Revision + 1
+	newRevision := currentRevision + 1
+	m.hiveRevisions[plan.HiveID] = newRevision
+	gate := domain.GateFor(plan.To, at)
+	gate.Revision = newRevision
+	m.hiveGates[plan.HiveID] = gate
 	return domain.Transition{HiveID: plan.HiveID, From: plan.From, To: plan.To}, nil
-}
-
-// SetHiveGate 发布蜂箱的写入门闸，供巡检与换王的准入判定读取。
-func (m *Memory) SetHiveGate(hiveID string, gate domain.HiveGate) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.hives[hiveID]; !ok {
-		return domain.NotFound("蜂箱", hiveID)
-	}
-	m.hiveGates[hiveID] = gate
-	return nil
 }
 
 // acceptsWriteLocked 返回当前写入门闸是否允许巡检与换王写入。
